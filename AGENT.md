@@ -1,7 +1,7 @@
 # Agent Architecture
 
 ## Overview
-This agent is a CLI tool that connects to an LLM to answer user questions. It is built as part of a software engineering lab to demonstrate the integration of LLMs into software systems.
+This agent is a CLI tool that connects to an LLM to answer user questions. It is built as part of a software engineering lab to demonstrate the integration of LLMs into software systems. 
 
 ## Components
 - **CLI Entry Point (`agent.py`):** Handles command-line arguments and orchestrates the request-response cycle.
