@@ -7,7 +7,7 @@ from typing import List, Optional, Dict, Any
 import re
 
 class Settings(BaseSettings):
-    llm_api_key: str
+    llm_api_key: str = ""
     llm_api_base: str = "https://openrouter.ai/api/v1"
     llm_model: str = "meta-llama/llama-3.3-70b-instruct:free"
     lms_api_key: Optional[str] = None
@@ -18,6 +18,15 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8", 
         extra="ignore"
     )
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Prioritize environment variables, then env files
+        self.llm_api_key = os.getenv("LLM_API_KEY", self.llm_api_key)
+        self.llm_api_base = os.getenv("LLM_API_BASE", self.llm_api_base)
+        self.llm_model = os.getenv("LLM_MODEL", self.llm_model)
+        self.lms_api_key = os.getenv("LMS_API_KEY", self.lms_api_key)
+        self.agent_api_base_url = os.getenv("AGENT_API_BASE_URL", self.agent_api_base_url)
 
 def list_files(path: str) -> str:
     """List files and directories at a given path."""
@@ -98,6 +107,9 @@ def main():
 
     try:
         settings = Settings()
+        if not settings.llm_api_key:
+            print("Error: LLM_API_KEY is not set in environment or secret files.", file=sys.stderr)
+            sys.exit(1)
     except Exception as e:
         print(f"Error loading settings: {e}", file=sys.stderr)
         sys.exit(1)
