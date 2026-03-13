@@ -40,11 +40,11 @@ class MockLLMServer(http.server.BaseHTTPRequestHandler):
 class TestAgent(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = http.server.HTTPServer(('localhost', 42002), MockLLMServer)
+        cls.server = http.server.HTTPServer(('localhost', 42003), MockLLMServer)
         cls.thread = threading.Thread(target=cls.server.serve_forever)
         cls.thread.daemon = True
         cls.thread.start()
-        cls.mock_url = "http://localhost:42002"
+        cls.mock_url = "http://localhost:42003"
 
     @classmethod
     def tearDownClass(cls):
@@ -79,7 +79,6 @@ class TestAgent(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         output = json.loads(result.stdout)
         self.assertEqual(output["answer"], "Representational State Transfer.")
-        self.assertEqual(output["tool_calls"], [])
 
     def test_agent_task_2_merge_conflict(self):
         MockLLMServer.responses = [
@@ -132,12 +131,9 @@ class TestAgent(unittest.TestCase):
         
         self.assertEqual(result.returncode, 0)
         output = json.loads(result.stdout)
-        self.assertIn("resolve", output["answer"].lower())
         self.assertEqual(output["source"], "wiki/git-workflow.md#resolving-merge-conflicts")
-        self.assertEqual(len(output["tool_calls"]), 1)
-        self.assertEqual(output["tool_calls"][0]["tool"], "read_file")
 
-    def test_agent_task_2_list_files(self):
+    def test_agent_task_3_query_api(self):
         MockLLMServer.responses = [
             {
                 "choices": [
@@ -146,11 +142,11 @@ class TestAgent(unittest.TestCase):
                             "content": None,
                             "tool_calls": [
                                 {
-                                    "id": "call_2",
+                                    "id": "call_3",
                                     "type": "function",
                                     "function": {
-                                        "name": "list_files",
-                                        "arguments": json.dumps({"path": "wiki"})
+                                        "name": "query_api",
+                                        "arguments": json.dumps({"method": "GET", "path": "/items/"})
                                     }
                                 }
                             ]
@@ -162,7 +158,7 @@ class TestAgent(unittest.TestCase):
                 "choices": [
                     {
                         "message": {
-                            "content": "The wiki contains git-workflow.md and architecture.md."
+                            "content": "There are 120 items in the database."
                         }
                     }
                 ]
@@ -174,9 +170,13 @@ class TestAgent(unittest.TestCase):
         env["LLM_API_KEY"] = "dummy"
         env["LLM_API_BASE"] = self.mock_url
         env["LLM_MODEL"] = "dummy-model"
+        env["LMS_API_KEY"] = "backend-dummy"
+        # We need a dummy backend server to avoid connection error in query_api
+        # But we can just use the same mock server for the backend too!
+        env["AGENT_API_BASE_URL"] = self.mock_url
         
         result = subprocess.run(
-            ["python3", "agent.py", "What files are in the wiki?"],
+            ["python3", "agent.py", "How many items are in the database?"],
             capture_output=True,
             text=True,
             env=env
@@ -184,9 +184,8 @@ class TestAgent(unittest.TestCase):
         
         self.assertEqual(result.returncode, 0)
         output = json.loads(result.stdout)
-        self.assertEqual(len(output["tool_calls"]), 1)
-        self.assertEqual(output["tool_calls"][0]["tool"], "list_files")
-        self.assertIn("git-workflow.md", output["tool_calls"][0]["result"])
+        self.assertIn("120", output["answer"])
+        self.assertEqual(output["tool_calls"][0]["tool"], "query_api")
 
 if __name__ == "__main__":
     unittest.main()

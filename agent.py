@@ -4,18 +4,24 @@ import httpx
 import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List, Optional, Dict, Any
+import re
 
 class Settings(BaseSettings):
     llm_api_key: str
     llm_api_base: str = "https://openrouter.ai/api/v1"
     llm_model: str = "meta-llama/llama-3.3-70b-instruct:free"
+    lms_api_key: Optional[str] = None
+    agent_api_base_url: str = "http://localhost:42002"
 
-    model_config = SettingsConfigDict(env_file=".env.agent.secret", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(".env.agent.secret", ".env.docker.secret"), 
+        env_file_encoding="utf-8", 
+        extra="ignore"
+    )
 
 def list_files(path: str) -> str:
     """List files and directories at a given path."""
     try:
-        # Security check: no parent directory traversal
         abs_root = os.path.abspath(os.getcwd())
         target_path = os.path.abspath(os.path.join(abs_root, path))
         
@@ -24,7 +30,7 @@ def list_files(path: str) -> str:
         
         if not os.path.exists(target_path):
             return f"Error: Path {path} does not exist."
-        
+            
         if not os.path.isdir(target_path):
             return f"Error: Path {path} is not a directory."
             
@@ -36,7 +42,6 @@ def list_files(path: str) -> str:
 def read_file(path: str) -> str:
     """Read a file from the project repository."""
     try:
-        # Security check: no parent directory traversal
         abs_root = os.path.abspath(os.getcwd())
         target_path = os.path.abspath(os.path.join(abs_root, path))
         
@@ -45,12 +50,42 @@ def read_file(path: str) -> str:
             
         if not os.path.exists(target_path):
             return f"Error: File {path} does not exist."
-        
+            
         if os.path.isdir(target_path):
             return f"Error: Path {path} is a directory."
             
         with open(target_path, "r", encoding="utf-8") as f:
             return f.read()
+    except Exception as e:
+        return f"Error: {e}"
+
+def query_api(method: str, path: str, body: Optional[str] = None, settings: Settings = None) -> str:
+    """Call the deployed backend API."""
+    if settings is None:
+        return "Error: Settings not provided."
+        
+    url = f"{settings.agent_api_base_url.rstrip('/')}/{path.lstrip('/')}"
+    headers = {}
+    if settings.lms_api_key:
+        headers["Authorization"] = f"Bearer {settings.lms_api_key}"
+        
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            if method.upper() == "GET":
+                response = client.get(url, headers=headers)
+            elif method.upper() == "POST":
+                response = client.post(url, headers=headers, content=body)
+            elif method.upper() == "PUT":
+                response = client.put(url, headers=headers, content=body)
+            elif method.upper() == "DELETE":
+                response = client.delete(url, headers=headers)
+            else:
+                return f"Error: Unsupported method {method}"
+                
+            return json.dumps({
+                "status_code": response.status_code,
+                "body": response.text
+            })
     except Exception as e:
         return f"Error: {e}"
 
@@ -68,10 +103,12 @@ def main():
         sys.exit(1)
 
     system_prompt = (
-        "You are a helpful assistant. Use the provided tools to answer the user's question. "
-        "Use 'list_files' to discover files in the 'wiki' directory and 'read_file' to read their content. "
-        "When providing an answer based on a wiki file, include the source reference in the 'source' field "
-        "using the format 'wiki/file.md#section-anchor'."
+        "You are a helpful system agent. You have access to the project documentation and its live backend API. "
+        "Use 'list_files' and 'read_file' to explore the project structure and documentation (in 'wiki/' or source code). "
+        "Use 'query_api' to interact with the live backend for data-dependent questions or system facts. "
+        "If a question requires specific data (e.g., number of items), use 'query_api' to fetch it. "
+        "When providing an answer based on documentation, include the source reference in the format 'wiki/file.md#anchor'. "
+        "If you use multiple tools, show your reasoning between calls."
     )
 
     messages = [
@@ -107,6 +144,22 @@ def main():
                     "required": ["path"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "query_api",
+                "description": "Call the deployed backend API.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "method": {"type": "string", "enum": ["GET", "POST", "PUT", "DELETE"], "description": "HTTP method."},
+                        "path": {"type": "string", "description": "The API endpoint path (e.g., '/items/')."},
+                        "body": {"type": "string", "description": "Optional JSON request body."}
+                    },
+                    "required": ["method", "path"]
+                }
+            }
         }
     ]
 
@@ -114,7 +167,7 @@ def main():
     
     try:
         with httpx.Client(timeout=60.0) as client:
-            for _ in range(10): # Max 10 tool calls
+            for _ in range(10):
                 payload = {
                     "model": settings.llm_model,
                     "messages": messages,
@@ -137,20 +190,11 @@ def main():
                 messages.append(message)
                 
                 if not message.get("tool_calls"):
-                    # Final answer
                     content = message.get("content") or ""
-                    
-                    # Extract source if present in the answer or as a separate field
-                    # For Task 2, we need a separate JSON field.
-                    # We'll try to find the source in the content if the LLM followed the prompt.
                     source = ""
-                    # Simple heuristic: look for wiki/... in the text
-                    import re
                     match = re.search(r"wiki/[a-zA-Z0-9\-\.]+(?:#[a-zA-Z0-9\-\.]+)?", content)
                     if match:
                         source = match.group(0)
-                        # Remove source from the final answer text if it's there
-                        # content = content.replace(source, "").strip()
                     
                     output = {
                         "answer": content,
@@ -160,7 +204,6 @@ def main():
                     print(json.dumps(output))
                     return
 
-                # Execute tool calls
                 for tool_call in message["tool_calls"]:
                     function_name = tool_call["function"]["name"]
                     function_args = json.loads(tool_call["function"]["arguments"])
@@ -169,6 +212,13 @@ def main():
                         result = list_files(function_args.get("path", "."))
                     elif function_name == "read_file":
                         result = read_file(function_args.get("path", ""))
+                    elif function_name == "query_api":
+                        result = query_api(
+                            function_args.get("method", "GET"),
+                            function_args.get("path", "/"),
+                            function_args.get("body"),
+                            settings
+                        )
                     else:
                         result = f"Error: Unknown tool {function_name}"
                         
@@ -185,7 +235,6 @@ def main():
                         "content": result
                     })
 
-            # If we hit the limit
             print(json.dumps({
                 "answer": "Error: Maximum tool calls reached.",
                 "source": "",
